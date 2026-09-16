@@ -7,6 +7,8 @@ const QMI_DIRECT_RX = 0x08;
 
 const DIRECT_CSR_RESET = 0x01800000;
 const DIRECT_CSR_BUSY = 1 << 1;
+const DIRECT_CSR_ASSERT_CS0N = 1 << 2;
+const DIRECT_CSR_ASSERT_CS1N = 1 << 3;
 const DIRECT_CSR_TXEMPTY = 1 << 11;
 const DIRECT_CSR_TXFULL = 1 << 10;
 const DIRECT_CSR_RXEMPTY = 1 << 16;
@@ -16,9 +18,10 @@ const DIRECT_CSR_EN = 1 << 0;
 /**
  * RP2350 QSPI Memory Interface (QMI).
  * Reference: RP2350 datasheet §12.14.
- * Models the direct-mode CSR/TX/RX FIFOs as always-empty/never-busy
- * so the bootrom's polling loops complete. The memory-mapped XIP
- * window (0x10000000+) is handled by the chip's flash array directly.
+ * Models direct-mode CSR/TX/RX FIFOs to support PSRAM initialisation and ID queries
+ * (e.g. command 0x9f returning KGD = 0x5D, EID = 0x26 for APS6404L PSRAM chips).
+ * The memory-mapped XIP windows (0x10000000+ flash, 0x11000000+ PSRAM) are handled
+ * by the chip directly.
  */
 export class RPXIPQMI<ChipType extends IRPChip = IRPChip>
   extends BasePeripheral<ChipType>
@@ -26,37 +29,61 @@ export class RPXIPQMI<ChipType extends IRPChip = IRPChip>
 {
   private directCsr = DIRECT_CSR_RESET;
   private directCsrEn = false;
+  private rxFifo: number[] = [];
+  private currentCmd = 0;
+  private byteCount = 0;
+  private csAsserted = false;
+  private regs = new Uint32Array(256);
 
   readUint32(offset: number) {
     if (offset === QMI_DIRECT_CSR) {
-      // BUSY is never set (we complete transfers synchronously).
-      // FIFO status bits report empty (both FIFOs at reset).
+      const rxEmpty = this.rxFifo.length === 0 ? DIRECT_CSR_RXEMPTY : 0;
       return (
         (this.directCsr |
           (this.directCsrEn ? DIRECT_CSR_EN : 0) |
           DIRECT_CSR_TXEMPTY |
-          DIRECT_CSR_RXEMPTY) >>>
+          rxEmpty) >>>
         0
       );
     }
     if (offset === QMI_DIRECT_RX) {
-      // RX FIFO is empty — return 0 (undefined on real h/w).
-      return 0;
+      return (this.rxFifo.shift() ?? 0) >>> 0;
     }
-    return super.readUint32(offset);
+    return this.regs[offset >>> 2];
   }
 
   writeUint32(offset: number, value: number) {
     if (offset === QMI_DIRECT_CSR) {
       this.directCsr = value & ~DIRECT_CSR_BUSY;
       this.directCsrEn = !!(value & DIRECT_CSR_EN);
+      const newCsAsserted = !!(value & (DIRECT_CSR_ASSERT_CS0N | DIRECT_CSR_ASSERT_CS1N));
+      if (newCsAsserted && !this.csAsserted) {
+        this.currentCmd = 0;
+        this.byteCount = 0;
+      }
+      this.csAsserted = newCsAsserted;
       return;
     }
     if (offset === QMI_DIRECT_TX) {
-      // TX FIFO push — accept and discard (transfers complete synchronously).
+      const txByte = value & 0xff;
+      if (this.byteCount === 0) {
+        this.currentCmd = txByte;
+      }
+
+      let response = 0;
+      if (this.currentCmd === 0x9f) {
+        if (this.byteCount === 5) {
+          response = 0x5d; // KGD
+        } else if (this.byteCount === 6) {
+          response = 0x26; // EID (APS6404L)
+        }
+      }
+
+      this.byteCount++;
+      this.rxFifo.push(response);
       return;
     }
-    super.writeUint32(offset, value);
+    this.regs[offset >>> 2] = value;
   }
 }
 

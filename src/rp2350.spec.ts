@@ -175,4 +175,61 @@ describe('RP2350', () => {
       expect(rp2350.core0.meipa[IRQ2350.SIO_IRQ_MTIMECMP]).toBeFalsy();
     });
   });
+
+  describe('PSRAM and QMI Direct Mode', () => {
+    const XIP_QMI_DIRECT_CSR = 0x400d0000;
+    const XIP_QMI_DIRECT_TX = 0x400d0004;
+    const XIP_QMI_DIRECT_RX = 0x400d0008;
+
+    it('should support QMI Direct Mode PSRAM ID probing (0x9f -> KGD 0x5D, EID 0x26)', () => {
+      const rp2350 = new RP2350();
+      // Assert CS1N and Enable Direct Mode
+      rp2350.writeUint32(XIP_QMI_DIRECT_CSR, (30 << 22) | (1 << 3) | (1 << 0));
+
+      const txBytes = [0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+      for (const b of txBytes) {
+        rp2350.writeUint32(XIP_QMI_DIRECT_TX, b);
+      }
+
+      const rxBytes: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        rxBytes.push(rp2350.readUint32(XIP_QMI_DIRECT_RX));
+      }
+
+      expect(rxBytes[5]).toBe(0x5d); // KGD for APS6404L
+      expect(rxBytes[6]).toBe(0x26); // EID for APS6404L
+    });
+
+    it('should read and write memory in the PSRAM region (0x11000000+)', () => {
+      const rp2350 = new RP2350();
+      const psramBase = 0x11000000;
+
+      // 32-bit write / read
+      rp2350.writeUint32(psramBase, 0x12345678);
+      expect(rp2350.readUint32(psramBase)).toBe(0x12345678);
+
+      // 16-bit write / read
+      rp2350.writeUint16(psramBase + 4, 0xabcd);
+      expect(rp2350.readUint16(psramBase + 4)).toBe(0xabcd);
+
+      // 8-bit write / read
+      rp2350.writeUint8(psramBase + 6, 0xfe);
+      expect(rp2350.readUint8(psramBase + 6)).toBe(0xfe);
+      expect(rp2350.readUint32(psramBase + 4)).toBe(0x00feabcd);
+    });
+
+    it('should execute RISC-V instructions from PSRAM', () => {
+      const rp2350 = new RP2350();
+      const psramBase = 0x11000000;
+
+      // Store a compressed `ret` (0x8082) instruction
+      rp2350.writeUint16(psramBase, 0x8082);
+
+      rp2350.riscvCore0.pc = psramBase;
+      rp2350.riscvCore0.setRegisterU(1, 0x20001000); // Return address in ra (x1 / ra)
+
+      rp2350.step();
+      expect(rp2350.riscvCore0.pc).toBe(0x20001000);
+    });
+  });
 });
