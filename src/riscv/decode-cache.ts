@@ -6,8 +6,10 @@ import { Int53, Int53Array, Uint32 } from '../utils/types';
 // drift). Imported they would be property accesses in the range tests below,
 // which getDecodeEntry runs once per instruction: measured +37% under Node.
 const FLASH_START_ADDRESS = 0x10000000;
+const PSRAM_START_ADDRESS = 0x11000000;
 const RAM_START_ADDRESS = 0x20000000;
 const FLASH_SIZE = 16 * 1024 * 1024;
+const PSRAM_SIZE = 16 * 1024 * 1024;
 
 function decodeUncached(chip: RP2350, address: Uint32): Int53 {
   const inst = chip.readUint16(address);
@@ -26,6 +28,11 @@ export function getDecodeEntry(chip: RP2350, address: Uint32): Int53 {
     const idx = (address - RAM_START_ADDRESS) >>> 1;
     const packed = chip.sramDecode[idx];
     return packed !== 0 ? packed : decodeAndCache(chip, chip.sramDecode, idx, address);
+  }
+  if (address >= PSRAM_START_ADDRESS && address < PSRAM_START_ADDRESS + PSRAM_SIZE) {
+    const idx = (address - PSRAM_START_ADDRESS) >>> 1;
+    const packed = chip.psramDecode[idx];
+    return packed !== 0 ? packed : decodeAndCache(chip, chip.psramDecode, idx, address);
   }
   if (address >= FLASH_START_ADDRESS && address < RAM_START_ADDRESS) {
     const idx = (address & (FLASH_SIZE - 1)) >>> 1;

@@ -48,6 +48,7 @@ import { loadFirmware, LoadFirmwareOptions, LoadFirmwareResult } from './utils/l
 import { Uint32, Float64, Int53, Int53Array } from './utils/types';
 
 export const FLASH_START_ADDRESS = 0x10000000;
+export const PSRAM_START_ADDRESS = 0x11000000;
 export const RAM_START_ADDRESS = 0x20000000;
 export const APB_START_ADDRESS = 0x40000000;
 export const DPRAM_START_ADDRESS = 0x50100000;
@@ -64,6 +65,7 @@ const MB = 1024 * KB;
 const MHz = 1_000_000;
 
 const FLASH_SIZE = 16 * MB;
+export const PSRAM_SIZE = 16 * MB;
 
 /** Architecture selection for the two processor sockets on RP2350. */
 export type CoreArch = 'riscv' | 'arm';
@@ -93,6 +95,9 @@ export class RP2350 implements IRPChip {
   readonly flash = new Uint8Array(FLASH_SIZE);
   readonly flash16 = new Uint16Array(this.flash.buffer);
   readonly flash32 = new Uint32Array(this.flash.buffer);
+  readonly psram = new Uint8Array(PSRAM_SIZE);
+  readonly psram16 = new Uint16Array(this.psram.buffer);
+  readonly psram32 = new Uint32Array(this.psram.buffer);
   readonly usbDPRAM = new Uint8Array(4 * KB);
   readonly usbDPRAMView = new DataView(this.usbDPRAM.buffer);
 
@@ -101,6 +106,7 @@ export class RP2350 implements IRPChip {
   // 0 = not-yet-decoded. Single array load on cache hit.
   readonly sramDecode = new Int53Array(this.sram.length / 2);
   readonly flashDecode = new Int53Array(FLASH_SIZE / 2);
+  readonly psramDecode = new Int53Array(PSRAM_SIZE / 2);
 
   readonly identifier = 'rp2350';
 
@@ -422,6 +428,8 @@ export class RP2350 implements IRPChip {
     // SIO/PPB/peripherals/bootrom/DPRAM, which are comparatively rare per-step.
     if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
       return this.sram32[(address - RAM_START_ADDRESS) >>> 2];
+    } else if (address >= PSRAM_START_ADDRESS && address < PSRAM_START_ADDRESS + PSRAM_SIZE) {
+      return this.psram32[(address - PSRAM_START_ADDRESS) >>> 2];
     } else if (address >= FLASH_START_ADDRESS && address < RAM_START_ADDRESS) {
       // XIP mirrors flash four times. Also, reads from invalid adresses
       // don't seem to trigger exceptions (see Micropython)
@@ -470,6 +478,8 @@ export class RP2350 implements IRPChip {
     // Same SRAM-before-flash ordering as readUint32, for consistency.
     if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
       return this.sram16[(address - RAM_START_ADDRESS) >>> 1];
+    } else if (address >= PSRAM_START_ADDRESS && address < PSRAM_START_ADDRESS + PSRAM_SIZE) {
+      return this.psram16[(address - PSRAM_START_ADDRESS) >>> 1];
     } else if (address >= FLASH_START_ADDRESS && address < RAM_START_ADDRESS) {
       return this.flash16[(address & (FLASH_SIZE - 1)) >>> 1];
     }
@@ -479,10 +489,12 @@ export class RP2350 implements IRPChip {
   }
 
   readUint8(address: Uint32): Uint32 {
-    if (address >= FLASH_START_ADDRESS && address < RAM_START_ADDRESS) {
-      return this.flash[address & (FLASH_SIZE - 1)];
-    } else if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
+    if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
       return this.sram[address - RAM_START_ADDRESS];
+    } else if (address >= PSRAM_START_ADDRESS && address < PSRAM_START_ADDRESS + PSRAM_SIZE) {
+      return this.psram[address - PSRAM_START_ADDRESS];
+    } else if (address >= FLASH_START_ADDRESS && address < RAM_START_ADDRESS) {
+      return this.flash[address & (FLASH_SIZE - 1)];
     }
 
     const value = this.readUint16(address & 0xfffffffe);
@@ -500,11 +512,21 @@ export class RP2350 implements IRPChip {
     }
   }
 
+  private invalidatePsramDecode(address: Uint32, len: number) {
+    const startIdx = (address - PSRAM_START_ADDRESS) >>> 1;
+    const endIdx = (address + len - 1 - PSRAM_START_ADDRESS) >>> 1;
+    if (startIdx > 0) this.psramDecode[startIdx - 1] = 0;
+    for (let i = startIdx; i <= endIdx; i++) {
+      this.psramDecode[i] = 0;
+    }
+  }
+
   /** Drops every cached decode. For callers that rewrite code memory behind the
    * caches' back, i.e. anything loading an image rather than executing stores. */
   invalidateDecodeCache() {
     this.sramDecode.fill(0);
     this.flashDecode.fill(0);
+    this.psramDecode.fill(0);
   }
 
   writeUint32(address: Uint32, value: Uint32) {
@@ -520,6 +542,9 @@ export class RP2350 implements IRPChip {
     if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
       this.sram32[(address - RAM_START_ADDRESS) >>> 2] = value;
       this.invalidateSramDecode(address, 4);
+    } else if (address >= PSRAM_START_ADDRESS && address < PSRAM_START_ADDRESS + PSRAM_SIZE) {
+      this.psram32[(address - PSRAM_START_ADDRESS) >>> 2] = value;
+      this.invalidatePsramDecode(address, 4);
     } else if (address >= SIO_START_ADDRESS && address < SIO_START_ADDRESS + 0x10000000) {
       this.sio.writeUint32(address - SIO_START_ADDRESS, value, this.currentCore);
     } else if (this.isArmCore && address >= 0xe0020000 && address < 0xe0030000) {
@@ -560,6 +585,11 @@ export class RP2350 implements IRPChip {
     if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
       this.sram[address - RAM_START_ADDRESS] = value;
       this.invalidateSramDecode(address, 1);
+      return;
+    }
+    if (address >= PSRAM_START_ADDRESS && address < PSRAM_START_ADDRESS + PSRAM_SIZE) {
+      this.psram[address - PSRAM_START_ADDRESS] = value;
+      this.invalidatePsramDecode(address, 1);
       return;
     }
     if (address >= FLASH_START_ADDRESS && address < RAM_START_ADDRESS) {
@@ -603,6 +633,11 @@ export class RP2350 implements IRPChip {
     if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
       this.sram16[(address - RAM_START_ADDRESS) >>> 1] = value;
       this.invalidateSramDecode(address, 2);
+      return;
+    }
+    if (address >= PSRAM_START_ADDRESS && address < PSRAM_START_ADDRESS + PSRAM_SIZE) {
+      this.psram16[(address - PSRAM_START_ADDRESS) >>> 1] = value;
+      this.invalidatePsramDecode(address, 2);
       return;
     }
     if (address >= FLASH_START_ADDRESS && address < RAM_START_ADDRESS) {
