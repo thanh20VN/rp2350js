@@ -60,6 +60,7 @@ export class RPXIPQMI<ChipType extends IRPChip = IRPChip>
       if (newCsAsserted && !this.csAsserted) {
         this.currentCmd = 0;
         this.byteCount = 0;
+        this.rxFifo = [];
       }
       this.csAsserted = newCsAsserted;
       return;
