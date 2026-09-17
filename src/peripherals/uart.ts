@@ -111,16 +111,16 @@ export class RPUART<ChipType extends IRPChip = IRPChip>
     return (this.rxFIFO.full ? RXFF : 0) | (this.rxFIFO.empty ? RXFE : 0) | TXFE;
   }
 
+  get rawInterruptStatus() {
+    return UARTTXINTR | (this.rxFIFO.empty ? 0 : UARTRXINTR);
+  }
+
   checkInterrupts() {
-    // TODO We should actually implement a proper FIFO for TX
-    this.interruptStatus |= UARTTXINTR;
-    this.rpchip.setInterrupt(this.irq, !!(this.interruptStatus & this.interruptMask));
+    this.rpchip.setInterrupt(this.irq, !!(this.rawInterruptStatus & this.interruptMask));
   }
 
   feedByte(value: number) {
     this.rxFIFO.push(value);
-    // TODO check if the FIFO has reached the threshold level
-    this.interruptStatus |= UARTRXINTR;
     this.checkInterrupts();
   }
 
@@ -128,11 +128,6 @@ export class RPUART<ChipType extends IRPChip = IRPChip>
     switch (offset) {
       case UARTDR: {
         const value = this.rxFIFO.pull();
-        if (!this.rxFIFO.empty) {
-          this.interruptStatus |= UARTRXINTR;
-        } else {
-          this.interruptStatus &= ~UARTRXINTR;
-        }
         this.checkInterrupts();
         return value;
       }
@@ -149,9 +144,9 @@ export class RPUART<ChipType extends IRPChip = IRPChip>
       case UARTIMSC:
         return this.interruptMask;
       case UARTIRIS:
-        return this.interruptStatus;
+        return this.rawInterruptStatus;
       case UARTIMIS:
-        return this.interruptStatus & this.interruptMask;
+        return this.rawInterruptStatus & this.interruptMask;
       case UARTPERIPHID0:
         return 0x11;
       case UARTPERIPHID1:
@@ -176,6 +171,7 @@ export class RPUART<ChipType extends IRPChip = IRPChip>
     switch (offset) {
       case UARTDR:
         this.onByte?.(value & 0xff);
+        this.checkInterrupts();
         break;
 
       case UARTIBRD:
@@ -207,7 +203,6 @@ export class RPUART<ChipType extends IRPChip = IRPChip>
         break;
 
       case UARTICR:
-        this.interruptStatus &= ~this.rawWriteValue;
         this.checkInterrupts();
         break;
 

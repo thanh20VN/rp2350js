@@ -39,10 +39,7 @@ export class RPXIPQMI<ChipType extends IRPChip = IRPChip>
     if (offset === QMI_DIRECT_CSR) {
       const rxEmpty = this.rxFifo.length === 0 ? DIRECT_CSR_RXEMPTY : 0;
       return (
-        (this.directCsr |
-          (this.directCsrEn ? DIRECT_CSR_EN : 0) |
-          DIRECT_CSR_TXEMPTY |
-          rxEmpty) >>>
+        (this.directCsr | (this.directCsrEn ? DIRECT_CSR_EN : 0) | DIRECT_CSR_TXEMPTY | rxEmpty) >>>
         0
       );
     }

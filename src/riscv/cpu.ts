@@ -1143,8 +1143,12 @@ export class CPU implements ICpuCore {
   /** wfi/h3.block wake condition: an enabled external interrupt at or above
    * the current preemption level, regardless of MSTATUS.MIE. */
   wakingInterruptPending(): boolean {
-    if (!(this.csrs[0x304] & 0b100000000000)) return false;
-    // if MIE.MEIE is set... TODO consider software and timer interrupts as well
+    const mie = this.csrs[0x304];
+    const mip = this.csrs[0x344];
+    if (mie & (1 << 7) && mip & (1 << 7)) {
+      return true;
+    }
+    if (!(mie & (1 << 11))) return false;
     const meinext = this.csrs[0xbe4] >>> 0;
     const meinext_noirq = meinext >> 31;
     const meinext_irq_number = (meinext >>> 2) & 511;
@@ -1164,8 +1168,14 @@ export class CPU implements ICpuCore {
     if (!this.wakingInterruptPending()) return false;
     if (this.csrs[0x300] & 0b1000) {
       // ...and MSTATUS.MIE is set...
-      this.updateMEICONTEXT_priority_save(); // this gets called ONLY on external interrupt trap
-      this.trapEntry(((1 << 31) | 11) >>> 0); //TODO hardwired cause MEIP = external interrupt
+      const mie = this.csrs[0x304];
+      const mip = this.csrs[0x344];
+      if (mie & (1 << 7) && mip & (1 << 7)) {
+        this.trapEntry(((1 << 31) | 7) >>> 0);
+      } else {
+        this.updateMEICONTEXT_priority_save(); // this gets called ONLY on external interrupt trap
+        this.trapEntry(((1 << 31) | 11) >>> 0);
+      }
     }
     this.waiting = false; // "wfi ignores the global interrupt enable, MSTATUS.MIE"
     return true;

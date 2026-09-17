@@ -409,18 +409,20 @@ export class RP2350 implements IRPChip {
   readUint32(address: Uint32): Uint32 {
     address = address >>> 0; // round to 32-bits, unsigned
     if (address & 0x3) {
-      // Only LDR/STR singles, LDRH/STRH, and TBH may access unaligned
-      // addresses (handled separately in execute-thumb16.ts/execute-
-      // thumb32.ts via byte-composed reads that never reach this method).
-      // Anything that still calls readUint32 with an unaligned address is
-      // LDM/LDRD or an exclusive/acquire-release access, which the M33
-      // requires to be word-aligned and faults on otherwise (RP2350
-      // datasheet / ARMv8-M ARM §B8.3).
-      const pc = this.core[this.currentCore]?.PC;
-      throw Error(
-        `${LOG_NAME} unaligned word read from address ${address.toString(16)} at PC=${
-          pc !== undefined ? pc.toString(16) : 'unknown'
-        } (core${this.currentCore})`
+      if (this.isArmCore) {
+        const pc = this.core[this.currentCore]?.PC;
+        throw Error(
+          `${LOG_NAME} unaligned word read from address ${address.toString(16)} at PC=${
+            pc !== undefined ? pc.toString(16) : 'unknown'
+          } (core${this.currentCore})`
+        );
+      }
+      return (
+        (this.readUint8(address) |
+          (this.readUint8(address + 1) << 8) |
+          (this.readUint8(address + 2) << 16) |
+          (this.readUint8(address + 3) << 24)) >>>
+        0
       );
     }
     // Ordered by hit frequency, not address value: SRAM/flash (data/code, the
@@ -532,12 +534,19 @@ export class RP2350 implements IRPChip {
   writeUint32(address: Uint32, value: Uint32) {
     address = address >>> 0;
     if (address & 0x3) {
-      const pc = this.core[this.currentCore]?.PC;
-      throw Error(
-        `${LOG_NAME} unaligned word write to address ${address.toString(16)} at PC=${
-          pc !== undefined ? pc.toString(16) : 'unknown'
-        } (core${this.currentCore})`
-      );
+      if (this.isArmCore) {
+        const pc = this.core[this.currentCore]?.PC;
+        throw Error(
+          `${LOG_NAME} unaligned word write to address ${address.toString(16)} at PC=${
+            pc !== undefined ? pc.toString(16) : 'unknown'
+          } (core${this.currentCore})`
+        );
+      }
+      this.writeUint8(address, value & 0xff);
+      this.writeUint8(address + 1, (value >> 8) & 0xff);
+      this.writeUint8(address + 2, (value >> 16) & 0xff);
+      this.writeUint8(address + 3, (value >> 24) & 0xff);
+      return;
     }
     if (address >= RAM_START_ADDRESS && address < RAM_START_ADDRESS + this.sram.length) {
       this.sram32[(address - RAM_START_ADDRESS) >>> 2] = value;
@@ -759,6 +768,15 @@ export class RP2350 implements IRPChip {
   }
 
   setInterruptCore(irq: number, value: boolean, core: number) {
+    if (irq === IRQ2350.SIO_IRQ_MTIMECMP && !this.isArmCore) {
+      const cpu = this.core[core] as CPU;
+      if (value) {
+        cpu.csrs[0x344] |= 1 << 7; // MTIP in MIP
+      } else {
+        cpu.csrs[0x344] &= ~(1 << 7);
+      }
+      cpu.interruptsUpdated = true;
+    }
     this.core[core].setInterrupt(irq, value);
   }
 
